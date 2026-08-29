@@ -1,0 +1,168 @@
+name: Publish package
+
+# The one publish pipeline for every @proxy-smart npm package.
+#
+# RELEASING = BUMPING THE VERSION IN YOUR PR. A merge whose version is already on the
+# registry publishes nothing and says so in the run summary, so a docs- or CI-only
+# merge is a safe no-op rather than a red build.
+#
+# Publishing on merge to main, not on a GitHub Release. max-network's pipeline
+# records what the release-only trigger cost them: "0.8.0 sat on main unpublished
+# until someone noticed and cut a release by hand", and the fix was then copy-pasted
+# into four repos and missed in three. The `v*` tag trigger is kept so a release can
+# still drive a publish; the already-published probe makes running twice harmless.
+
+on:
+  workflow_call:
+    inputs:
+      bun-version:
+        description: 'Bun version to build and publish with.'
+        required: false
+        type: string
+        default: latest
+      install:
+        description: 'Install command.'
+        required: false
+        type: string
+        default: 'bun install --frozen-lockfile'
+      build:
+        description: >-
+          Build command, repeated here because `npm publish` needs the built output in
+          THIS job's workspace — the check job runs on a different runner. Empty skips it.
+        required: false
+        type: string
+        default: ''
+      lint:
+        required: false
+        type: string
+        default: ''
+      typecheck:
+        required: false
+        type: string
+        default: ''
+      test:
+        required: false
+        type: string
+        default: ''
+      tag-release:
+        description: 'Push a `v<version>` tag at the published commit, so a registry version stays traceable to a commit.'
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      GH_PACKAGES_TOKEN:
+        description: >-
+          Token with write:packages. One secret for reads AND writes on purpose:
+          shared-ui split them, only one was actually defined, and the install 401'd
+          invisibly for months.
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # The gate is CALLED, not restated, so a release and a pull request cannot drift.
+  # Referenced by full path rather than `./`: inside a reusable workflow a `./` path
+  # resolves against the CALLING repository, which would look for this file there.
+  check:
+    uses: proxy-smart/.github/.github/workflows/check.yml@main
+    with:
+      bun-version: ${{ inputs.bun-version }}
+      install: ${{ inputs.install }}
+      lint: ${{ inputs.lint }}
+      typecheck: ${{ inputs.typecheck }}
+      test: ${{ inputs.test }}
+      build: ${{ inputs.build }}
+    secrets: inherit
+
+  publish:
+    needs: check
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.probe.outputs.version }}
+      published: ${{ steps.probe.outputs.published }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ inputs.bun-version }}
+
+      # npm publishes; bun installs and builds. setup-node writes the .npmrc that
+      # points the scope at GitHub Packages.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: https://npm.pkg.github.com
+          scope: '@proxy-smart'
+
+      - name: Install
+        env:
+          GH_PACKAGES_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN }}
+        run: ${{ inputs.install }}
+
+      - name: Build
+        if: inputs.build != ''
+        env:
+          GH_PACKAGES_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN }}
+        run: ${{ inputs.build }}
+
+      - name: Is this version already published?
+        id: probe
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN }}
+        run: |
+          NAME=$(node -p "require('./package.json').name")
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          # `npm view` exits non-zero for an unpublished version — that is the success
+          # path here, so swallow it and test the captured output instead.
+          FOUND=$(npm view "$NAME@$VERSION" version --registry=https://npm.pkg.github.com 2>/dev/null || true)
+          if [ -n "$FOUND" ]; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "\`$NAME@$VERSION\` is already on the registry — nothing to publish. Bump the version in package.json to cut a release." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+            echo "Publishing \`$NAME@$VERSION\`." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Publish
+        if: steps.probe.outputs.published == 'false'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN }}
+        run: npm publish
+
+  # A SEPARATE job purely so `contents: write` is static. Actions does not allow an
+  # expression in `permissions:`, and a workflow that tries one fails at STARTUP with
+  # no job and no log — which is how max-network's first version broke three repos the
+  # moment they merged. Least privilege is kept by scoping the write here rather than
+  # widening the publish job.
+  tag:
+    needs: publish
+    if: inputs.tag-release && needs.publish.outputs.published == 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # Skipped when the tag already exists, which is the case when this run was itself
+      # triggered by pushing that tag. A tag pushed with the workflow token does not
+      # re-trigger workflows, so this cannot loop.
+      - name: Tag the release
+        env:
+          VERSION: ${{ needs.publish.outputs.version }}
+        run: |
+          if git rev-parse "v$VERSION" >/dev/null 2>&1; then
+            echo "Tag v$VERSION already exists — leaving it alone." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "v$VERSION"
+          git push origin "v$VERSION"

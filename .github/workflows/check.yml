@@ -1,0 +1,116 @@
+name: Check
+
+# The one verification workflow for every proxy-smart repository.
+#
+# Deliberately reusable rather than a file to copy. Max-Health-Inc and max-network
+# both arrived here the same way: each package repo carried its own copy, the copies
+# drifted, and the drift was not cosmetic. max-network's publish pipeline records
+# three repos silently not releasing because the TRIGGER diverged, and
+# openapi-ts-fetch / openapi-py-fetch still carry byte-identical publish workflows.
+#
+# Every command input defaults to empty, and an empty command SKIPS its step, so a
+# repo opts into the checks it actually has instead of being made to define a script
+# it does not need.
+#
+# Usage:
+#   jobs:
+#     check:
+#       uses: proxy-smart/.github/.github/workflows/check.yml@main
+#       with:
+#         typecheck: bun run typecheck
+#         test: bun run test
+#       secrets: inherit
+
+on:
+  workflow_call:
+    inputs:
+      bun-version:
+        description: 'Bun version to run the gate on.'
+        required: false
+        type: string
+        default: latest
+      install:
+        description: 'Install command.'
+        required: false
+        type: string
+        default: 'bun install --frozen-lockfile'
+      lint:
+        description: 'Lint command. Empty skips the step.'
+        required: false
+        type: string
+        default: ''
+      typecheck:
+        description: 'Typecheck command. Empty skips the step.'
+        required: false
+        type: string
+        default: ''
+      test:
+        description: 'Test command. Empty skips the step.'
+        required: false
+        type: string
+        default: ''
+      build:
+        description: 'Build command. Empty skips the step.'
+        required: false
+        type: string
+        default: ''
+      timeout-minutes:
+        description: 'Fail the gate rather than hang a runner.'
+        required: false
+        type: number
+        default: 15
+    secrets:
+      GH_PACKAGES_TOKEN:
+        description: >-
+          read:packages token. Required: every repo here installs at least one
+          @max-health-inc or @proxy-smart package from GitHub Packages, and GitHub
+          Packages demands a token even for a public one.
+        required: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  check:
+    name: lint + typecheck + test + build
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ inputs.bun-version }}
+
+      # bunfig.toml maps the scopes to npm.pkg.github.com and reads the token from
+      # $GH_PACKAGES_TOKEN, so it is exported for the install and every step after:
+      # a script that installs on demand needs it too.
+      - name: Install
+        env:
+          GH_PACKAGES_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN }}
+        run: ${{ inputs.install }}
+
+      - name: Lint
+        if: inputs.lint != ''
+        env:
+          GH_PACKAGES_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN }}
+        run: ${{ inputs.lint }}
+
+      - name: Typecheck
+        if: inputs.typecheck != ''
+        env:
+          GH_PACKAGES_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN }}
+        run: ${{ inputs.typecheck }}
+
+      - name: Test
+        if: inputs.test != ''
+        env:
+          GH_PACKAGES_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN }}
+        run: ${{ inputs.test }}
+
+      - name: Build
+        if: inputs.build != ''
+        env:
+          GH_PACKAGES_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN }}
+        run: ${{ inputs.build }}
