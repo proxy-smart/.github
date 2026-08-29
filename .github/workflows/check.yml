@@ -62,10 +62,11 @@ on:
     secrets:
       GH_PACKAGES_TOKEN:
         description: >-
-          read:packages token. Required: every repo here installs at least one
-          @max-health-inc or @proxy-smart package from GitHub Packages, and GitHub
-          Packages demands a token even for a public one.
-        required: true
+          read:packages token. Optional so a repo with no cross-org dependency runs
+          without one — it falls back to the workflow token, which can read this
+          org's own packages. A repo installing @max-health-inc packages does need
+          it: the workflow token is scoped to the repository's own org.
+        required: false
 
 permissions:
   contents: read
@@ -88,29 +89,29 @@ jobs:
       # a script that installs on demand needs it too.
       - name: Install
         env:
-          GH_PACKAGES_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN }}
+          GH_PACKAGES_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN || github.token }}
         run: ${{ inputs.install }}
 
       - name: Lint
         if: inputs.lint != ''
         env:
-          GH_PACKAGES_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN }}
+          GH_PACKAGES_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN || github.token }}
         run: ${{ inputs.lint }}
 
       - name: Typecheck
         if: inputs.typecheck != ''
         env:
-          GH_PACKAGES_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN }}
+          GH_PACKAGES_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN || github.token }}
         run: ${{ inputs.typecheck }}
 
       - name: Test
         if: inputs.test != ''
         env:
-          GH_PACKAGES_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN }}
+          GH_PACKAGES_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN || github.token }}
         run: ${{ inputs.test }}
 
       - name: Build
         if: inputs.build != ''
         env:
-          GH_PACKAGES_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN }}
+          GH_PACKAGES_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN || github.token }}
         run: ${{ inputs.build }}
