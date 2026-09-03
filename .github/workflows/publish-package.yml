@@ -49,12 +49,30 @@ on:
         required: false
         type: boolean
         default: true
+      registry:
+        description: >-
+          Which registry to publish to. Defaults to GitHub Packages, which every
+          @proxy-smart package used before any of them went public.
+
+          Set it to https://registry.npmjs.org for a package meant to be installed by
+          people outside this org: GitHub Packages requires a token even to READ a
+          public package, so a library published only there cannot be adopted. A repo
+          input rather than a second workflow, because the drift between near-identical
+          copies is what this file exists to prevent.
+        required: false
+        type: string
+        default: 'https://npm.pkg.github.com'
     secrets:
       GH_PACKAGES_TOKEN:
         description: >-
           Token with write:packages. One secret for reads AND writes on purpose:
           shared-ui split them, only one was actually defined, and the install 401'd
           invisibly for months.
+        required: false
+      NPM_TOKEN:
+        description: >-
+          Automation token for registry.npmjs.org. Required only when `registry` points
+          there; GitHub Packages publishes with the workflow token.
         required: false
 
 permissions:
@@ -83,11 +101,15 @@ jobs:
   publish:
     needs: check
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
     outputs:
       version: ${{ steps.probe.outputs.version }}
       published: ${{ steps.probe.outputs.published }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -95,10 +117,10 @@ jobs:
 
       # npm publishes; bun installs and builds. setup-node writes the .npmrc that
       # points the scope at GitHub Packages.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
-          registry-url: https://npm.pkg.github.com
+          registry-url: ${{ inputs.registry }}
           scope: '@proxy-smart'
 
       - name: Install
@@ -115,14 +137,15 @@ jobs:
       - name: Is this version already published?
         id: probe
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN || github.token }}
+          NODE_AUTH_TOKEN: ${{ inputs.registry == 'https://registry.npmjs.org' && secrets.NPM_TOKEN || secrets.GH_PACKAGES_TOKEN || github.token }}
+          REGISTRY: ${{ inputs.registry }}
         run: |
           NAME=$(node -p "require('./package.json').name")
           VERSION=$(node -p "require('./package.json').version")
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           # `npm view` exits non-zero for an unpublished version — that is the success
           # path here, so swallow it and test the captured output instead.
-          FOUND=$(npm view "$NAME@$VERSION" version --registry=https://npm.pkg.github.com 2>/dev/null || true)
+          FOUND=$(npm view "$NAME@$VERSION" version --registry="$REGISTRY" 2>/dev/null || true)
           if [ -n "$FOUND" ]; then
             echo "published=true" >> "$GITHUB_OUTPUT"
             echo "\`$NAME@$VERSION\` is already on the registry — nothing to publish. Bump the version in package.json to cut a release." >> "$GITHUB_STEP_SUMMARY"
@@ -134,8 +157,14 @@ jobs:
       - name: Publish
         if: steps.probe.outputs.published == 'false'
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN || github.token }}
-        run: npm publish
+          NODE_AUTH_TOKEN: ${{ inputs.registry == 'https://registry.npmjs.org' && secrets.NPM_TOKEN || secrets.GH_PACKAGES_TOKEN || github.token }}
+          REGISTRY: ${{ inputs.registry }}
+        run: |
+          if [ "$REGISTRY" = "https://registry.npmjs.org" ]; then
+            npm publish --access public --provenance
+          else
+            npm publish
+          fi
 
   # A SEPARATE job purely so `contents: write` is static. Actions does not allow an
   # expression in `permissions:`, and a workflow that tries one fails at STARTUP with
@@ -149,7 +178,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Skipped when the tag already exists, which is the case when this run was itself
       # triggered by pushing that tag. A tag pushed with the workflow token does not
