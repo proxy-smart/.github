@@ -137,9 +137,24 @@ jobs:
       - name: Is this version already published?
         id: probe
         env:
-          NODE_AUTH_TOKEN: ${{ inputs.registry == 'https://registry.npmjs.org' && secrets.NPM_TOKEN || secrets.GH_PACKAGES_TOKEN || github.token }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          PACKAGES_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN }}
+          WORKFLOW_TOKEN: ${{ github.token }}
           REGISTRY: ${{ inputs.registry }}
         run: |
+          set -euo pipefail
+          # Chosen here rather than in an expression: `A && B || C` returns C whenever B is
+          # falsy, so an absent NPM_TOKEN silently selected a GitHub credential for npmjs.
+          if [ "$REGISTRY" = "https://registry.npmjs.org" ]; then
+            if [ -z "${NPM_TOKEN:-}" ]; then
+              echo "::error::registry is npmjs but NPM_TOKEN is not set. A GitHub token cannot publish there, and npmjs answers an unauthorised PUT with 404 — which reads as 'no such package' and hides the real cause."
+              exit 1
+            fi
+            export NODE_AUTH_TOKEN="$NPM_TOKEN"
+          else
+            export NODE_AUTH_TOKEN="${PACKAGES_TOKEN:-$WORKFLOW_TOKEN}"
+          fi
+
           NAME=$(node -p "require('./package.json').name")
           VERSION=$(node -p "require('./package.json').version")
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
@@ -157,10 +172,27 @@ jobs:
       - name: Publish
         if: steps.probe.outputs.published == 'false'
         env:
-          NODE_AUTH_TOKEN: ${{ inputs.registry == 'https://registry.npmjs.org' && secrets.NPM_TOKEN || secrets.GH_PACKAGES_TOKEN || github.token }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          PACKAGES_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN }}
+          WORKFLOW_TOKEN: ${{ github.token }}
           REGISTRY: ${{ inputs.registry }}
         run: |
+          set -euo pipefail
+          # Chosen here rather than in an expression: `A && B || C` returns C whenever B is
+          # falsy, so an absent NPM_TOKEN silently selected a GitHub credential for npmjs.
           if [ "$REGISTRY" = "https://registry.npmjs.org" ]; then
+            if [ -z "${NPM_TOKEN:-}" ]; then
+              echo "::error::registry is npmjs but NPM_TOKEN is not set. A GitHub token cannot publish there, and npmjs answers an unauthorised PUT with 404 — which reads as 'no such package' and hides the real cause."
+              exit 1
+            fi
+            export NODE_AUTH_TOKEN="$NPM_TOKEN"
+          else
+            export NODE_AUTH_TOKEN="${PACKAGES_TOKEN:-$WORKFLOW_TOKEN}"
+          fi
+
+          if [ "$REGISTRY" = "https://registry.npmjs.org" ]; then
+            # --access public because a SCOPED package defaults to restricted; --provenance
+            # signs the tarball with this workflow's OIDC identity.
             npm publish --access public --provenance
           else
             npm publish
