@@ -69,6 +69,7 @@ on:
         required: false
 
 permissions:
+  actions: read
   contents: read
   packages: read
 
@@ -78,9 +79,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.timeout-minutes }}
     steps:
+      - name: Skip a tree this gate already passed
+        id: verified
+        uses: max-network/.github/.github/actions/verified-tree@main
+        with:
+          mode: lookup
+          key: ${{ inputs.bun-version }} ${{ inputs.install }} ${{ inputs.lint }} ${{ inputs.typecheck }} ${{ inputs.test }} ${{ inputs.build }}
+
       - uses: actions/checkout@v7
+        if: steps.verified.outputs.verified != 'true'
 
       - uses: max-network/.github/.github/actions/setup-bun@main
+        if: steps.verified.outputs.verified != 'true'
         with:
           bun-version: ${{ inputs.bun-version }}
 
@@ -88,30 +98,38 @@ jobs:
       # $GH_PACKAGES_TOKEN, so it is exported for the install and every step after:
       # a script that installs on demand needs it too.
       - name: Install
+        if: steps.verified.outputs.verified != 'true'
         env:
           GH_PACKAGES_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN || github.token }}
         run: ${{ inputs.install }}
 
       - name: Lint
-        if: inputs.lint != ''
+        if: steps.verified.outputs.verified != 'true' && (inputs.lint != '')
         env:
           GH_PACKAGES_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN || github.token }}
         run: ${{ inputs.lint }}
 
       - name: Typecheck
-        if: inputs.typecheck != ''
+        if: steps.verified.outputs.verified != 'true' && (inputs.typecheck != '')
         env:
           GH_PACKAGES_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN || github.token }}
         run: ${{ inputs.typecheck }}
 
       - name: Test
-        if: inputs.test != ''
+        if: steps.verified.outputs.verified != 'true' && (inputs.test != '')
         env:
           GH_PACKAGES_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN || github.token }}
         run: ${{ inputs.test }}
 
       - name: Build
-        if: inputs.build != ''
+        if: steps.verified.outputs.verified != 'true' && (inputs.build != '')
         env:
           GH_PACKAGES_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN || github.token }}
         run: ${{ inputs.build }}
+
+      - name: Record the verified tree
+        if: steps.verified.outputs.verified != 'true'
+        uses: max-network/.github/.github/actions/verified-tree@main
+        with:
+          mode: record
+          key: ${{ inputs.bun-version }} ${{ inputs.install }} ${{ inputs.lint }} ${{ inputs.typecheck }} ${{ inputs.test }} ${{ inputs.build }}
